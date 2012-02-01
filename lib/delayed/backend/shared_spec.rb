@@ -237,8 +237,8 @@ shared_examples_for 'a delayed_job backend' do
     end
 
     it "should be the instance method that will be called if its a performable method object" do
-      @job = Story.create(:text => "...").delay.save
-      @job.name.should == 'Story#save'
+      job = Story.create(:text => "...").delay.save
+      job.name.should == 'Story#save'
     end
 
     it "should parse from handler on deserialization error" do
@@ -276,6 +276,27 @@ shared_examples_for 'a delayed_job backend' do
       Delayed::Worker.max_priority = max
       10.times {|i| described_class.enqueue SimpleJob.new, :priority => i }
       5.times { described_class.reserve(worker).priority.should <= max }
+    end
+  end
+
+  context "worker read-ahead" do
+    before do
+      @read_ahead = Delayed::Worker.read_ahead
+    end
+
+    after do
+      Delayed::Worker.read_ahead = @read_ahead
+    end
+
+    it "should read five jobs" do
+      described_class.should_receive(:find_available).with(anything, 5, anything).and_return([])
+      described_class.reserve(worker)
+    end
+
+    it "should read a configurable number of jobs" do
+      Delayed::Worker.read_ahead = 15
+      described_class.should_receive(:find_available).with(anything, Delayed::Worker.read_ahead, anything).and_return([])
+      described_class.reserve(worker)
     end
   end
 
@@ -393,6 +414,14 @@ shared_examples_for 'a delayed_job backend' do
       story.update_attributes :text => 'goodbye'
       job.reload.payload_object.object.text.should == 'goodbye'
     end
+    
+    it "should raise error ArgumentError the record is not persisted" do
+      story = Story.new(:text => 'hello')
+      lambda {
+        story.delay.tell 
+      }.should raise_error(ArgumentError, "Jobs cannot be created for records before they've been persisted")
+      
+    end
 
     it "should raise deserialization error for destroyed records" do
       story = Story.create(:text => 'hello')
@@ -415,10 +444,10 @@ shared_examples_for 'a delayed_job backend' do
         begin
           old_max_run_time = Delayed::Worker.max_run_time
           Delayed::Worker.max_run_time = 1.second
-          @job = Delayed::Job.create :payload_object => LongRunningJob.new
-          worker.run(@job)
-          @job.reload.last_error.should =~ /expired/
-          @job.attempts.should == 1
+          job = Delayed::Job.create :payload_object => LongRunningJob.new
+          worker.run(job)
+          job.reload.last_error.should =~ /expired/
+          job.attempts.should == 1
         ensure
           Delayed::Worker.max_run_time = old_max_run_time
         end
@@ -467,11 +496,11 @@ shared_examples_for 'a delayed_job backend' do
       end
 
       it 'should re-schedule with handler provided time if present' do
-        @job = Delayed::Job.enqueue(CustomRescheduleJob.new(99.minutes))
-        worker.run(@job)
-        @job.reload
+        job = Delayed::Job.enqueue(CustomRescheduleJob.new(99.minutes))
+        worker.run(job)
+        job.reload
 
-        (Delayed::Job.db_time_now + 99.minutes - @job.run_at).abs.should < 1
+        (Delayed::Job.db_time_now + 99.minutes - job.run_at).abs.should < 1
       end
 
       it "should not fail when the triggered error doesn't have a message" do
